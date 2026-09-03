@@ -1,8 +1,11 @@
+import 'dart:ui' show AppExitResponse;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'controllers/queue_controller.dart';
 import 'controllers/task_controller.dart';
 import 'controllers/settings_controller.dart';
+import 'database/auto_backup_service.dart';
 import 'database/database_helper.dart';
 import '/pages/home_page.dart';
 import 'pages/queues_page.dart';
@@ -12,6 +15,9 @@ import 'pages/settings_page.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await DatabaseHelper().init();
+  // Snapshot on launch as well as on exit, so an unclean shutdown still leaves
+  // a recent backup behind.
+  await AutoBackupService().run();
   runApp(const MyApp());
 }
 
@@ -19,8 +25,34 @@ void main() async {
 ///
 /// Sets up the app-wide controllers and applies user settings such as theme,
 /// colors, and font size.
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+/// Holds the app-wide state and writes a backup when the app is closing.
+class _MyAppState extends State<MyApp> {
+  /// Watches for the window close request so data can be snapshotted first.
+  late final AppLifecycleListener _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    _lifecycle = AppLifecycleListener(
+      onExitRequested: () async {
+        await AutoBackupService().run();
+        return AppExitResponse.exit;
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _lifecycle.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

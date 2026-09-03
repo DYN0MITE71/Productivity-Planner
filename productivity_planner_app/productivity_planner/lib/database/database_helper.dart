@@ -1,6 +1,7 @@
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/queue_model.dart';
 import '../models/task_model.dart';
+import 'storage_migration.dart';
 
 /// Singleton helper for working with the local Hive database.
 ///
@@ -26,8 +27,15 @@ class DatabaseHelper {
   static const String _settingsBox = 'settings';
 
   /// Initializes Hive, registers model adapters, and opens all app boxes.
+  ///
+  /// Boxes are stored in the application support directory rather than the
+  /// Documents folder. Documents is redirected by cloud-sync tools such as
+  /// OneDrive Known Folder Move, and a redirect leaves the app reading an empty
+  /// directory. See [StorageMigration], which also copies data across from the
+  /// old location on first launch.
   Future<void> init() async {
-    await Hive.initFlutter();
+    final dir = await StorageMigration.resolve();
+    Hive.init(dir.path);
     Hive.registerAdapter(QueueAdapter());
     Hive.registerAdapter(TaskAdapter());
     await Hive.openBox<Queue>(_queueBox);
