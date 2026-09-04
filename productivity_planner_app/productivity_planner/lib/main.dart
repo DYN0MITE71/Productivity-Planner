@@ -15,10 +15,16 @@ import 'pages/settings_page.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await DatabaseHelper().init();
-  // Snapshot on launch as well as on exit, so an unclean shutdown still leaves
-  // a recent backup behind.
-  await AutoBackupService().run();
-  runApp(const MyApp());
+  // Check for newer data from another computer BEFORE writing anything. A
+  // launch snapshot taken first would be the newest file in the shared folder
+  // and would bury the very snapshot being offered.
+  final incoming = await AutoBackupService().findIncoming();
+  if (incoming == null) {
+    // Nothing to load, so snapshot on launch as well as on exit; an unclean
+    // shutdown then still leaves a recent backup behind.
+    await AutoBackupService().run();
+  }
+  runApp(MyApp(incoming: incoming));
 }
 
 /// Root widget for the Productivity Planner app.
@@ -26,7 +32,10 @@ void main() async {
 /// Sets up the app-wide controllers and applies user settings such as theme,
 /// colors, and font size.
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  const MyApp({super.key, this.incoming});
+
+  /// Newer data found from another computer, offered once at startup.
+  final IncomingSnapshot? incoming;
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -101,7 +110,10 @@ class _MyAppState extends State<MyApp> {
       child: child!,
     );
   },
-  home: const MyHomePage(title: 'Productivity Planner'),
+  home: MyHomePage(
+    title: 'Productivity Planner',
+    incoming: widget.incoming,
+  ),
 );
         },
       ),
@@ -116,10 +128,13 @@ enum AppPage { home, queues, settings }
 ///
 /// Displays the app bar, selected page content, and bottom navigation bar.
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+  const MyHomePage({super.key, required this.title, this.incoming});
 
   /// Title shown in the app bar.
   final String title;
+
+  /// Newer data from another computer, offered once after the first frame.
+  final IncomingSnapshot? incoming;
 
   @override
   State<MyHomePage> createState() => _MyHomePageState();
@@ -133,6 +148,69 @@ class _MyHomePageState extends State<MyHomePage> {
   ///
   /// This keeps task counts and lists up to date after changes made on other pages.
   int _homeRefreshKey = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    final incoming = widget.incoming;
+    if (incoming != null) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _offerIncoming(incoming),
+      );
+    }
+  }
+
+  /// Asks whether to replace this computer's data with a newer snapshot from
+  /// another one.
+  ///
+  /// Replacing the whole database is destructive and cannot be merged, so it
+  /// is always confirmed. This computer's current data is snapshotted either
+  /// way, which both preserves it before an import and records the decision so
+  /// the same file is not offered again.
+  Future<void> _offerIncoming(IncomingSnapshot incoming) async {
+    final load = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Newer data available'),
+        content: Text(
+          'A backup from ${incoming.machine} (${incoming.whenLabel}) has '
+          '${incoming.queueCount} queues and ${incoming.taskCount} tasks.\n\n'
+          'Loading it replaces everything on this computer. A backup of what '
+          'is here now is saved first.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Keep this computer\'s'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Load'),
+          ),
+        ],
+      ),
+    );
+
+    // Save this computer's current state before touching anything.
+    await AutoBackupService().run();
+    if (load != true) return;
+
+    try {
+      await DatabaseHelper().importData(incoming.data);
+      if (!mounted) return;
+      context.read<QueueController>().loadQueues();
+      setState(() => _homeRefreshKey++);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Loaded data from ${incoming.machine}.')),
+      );
+    } on Exception catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not load that backup: $e')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
